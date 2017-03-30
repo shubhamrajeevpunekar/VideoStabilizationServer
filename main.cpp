@@ -82,7 +82,7 @@ int main(int argc, char **argv)
 	string srcIP = "192.168.0.106";
 	string srcURL = "http://" + srcIP + ":8080/videofeed?dummy=param.mpjg";
 	string testVideo = "/home/srp3003/v3.avi";
-	VideoCapture cap(testVideo);
+	VideoCapture cap(srcURL);
 	assert(cap.isOpened());
 
 	Mat cur, cur_grey;

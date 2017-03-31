@@ -4,6 +4,11 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <vector>
+#include <deque>
+#include <pthread.h>
+#include <sched.h>
+#include <unistd.h>
 
 //for CUDA GpuMat
 #include <opencv2/core/cuda.hpp>
@@ -13,6 +18,26 @@
 
 using namespace std;
 using namespace cv;
+
+//void *th_func(void * arg) {
+//	//typecasting the obtained reference
+//	deque <string> *frameBuffer_ = (deque<string>*)arg;
+//	cpu_set_t cpuset;
+//	int cpu=2;
+//	CPU_ZERO(&cpuset);
+//	CPU_SET(cpu,&cpuset);
+//
+//	sched_setaffinity(0, sizeof(cpuset), &cpuset);
+//	sleep(2);
+//	while(true){
+//		if(frameBuffer_->empty()) {
+//			continue;
+//		}
+//		cout << frameBuffer_->at(0);
+//		frameBuffer_->pop_front();
+//	}
+//	return 0;
+//}
 
 const int HORIZONTAL_BORDER_CROP = 40; // In pixels. Crops the border to reduce the black borders from stabilisation being too noticeable.
 
@@ -73,6 +98,10 @@ struct Trajectory
 //
 int main(int argc, char **argv)
 {
+
+//	//for streaming on a char vector
+//	 deque <string> frameBuffer;
+
 	// For further analysis
 	ofstream out_transform("prev_to_cur_transformation.txt");
 	ofstream out_trajectory("trajectory.txt");
@@ -82,7 +111,7 @@ int main(int argc, char **argv)
 	string srcIP = "192.168.0.106";
 	string srcURL = "http://" + srcIP + ":8080/videofeed?dummy=param.mpjg";
 	string testVideo = "/home/srp3003/v3.avi";
-	VideoCapture cap(srcURL);
+	VideoCapture cap(0);
 	assert(cap.isOpened());
 
 	Mat cur, cur_grey;
@@ -133,6 +162,10 @@ int main(int argc, char **argv)
 	Mat last_T;
 	Mat prev_grey_,cur_grey_;
 	Mat output;
+
+//	//Testing thread
+//	pthread_t thread;
+//	pthread_create(&thread,NULL,th_func,(void*)&frameBuffer);
 
 	while(true) {
 		cap >> cur;
@@ -190,84 +223,78 @@ int main(int argc, char **argv)
 
 
 		if(prev_corner2.size()>10) {
+			// translation + rotation only
+			Mat T = estimateRigidTransform(prev_corner2, cur_corner2, false); // false = rigid transform, no scaling/shearing
+			// in rare cases no transform is found. We'll just use the last known good transform.
+			if(T.data == NULL) {
+				last_T.copyTo(T);
+			}
+			T.copyTo(last_T);
+			// decompose T
+			double dx = T.at<double>(0,2);
+			double dy = T.at<double>(1,2);
+			double da = atan2(T.at<double>(1,0), T.at<double>(0,0));
+			//
+			//prev_to_cur_transform.push_back(TransformParam(dx, dy, da));
 
+			out_transform << k << " " << dx << " " << dy << " " << da << endl;
+			//
+			// Accumulated frame to frame transform
+			x += dx;
+			y += dy;
+			a += da;
+			//trajectory.push_back(Trajectory(x,y,a));
+			//
+			out_trajectory << k << " " << x << " " << y << " " << a << endl;
+			//
+			z = Trajectory(x,y,a);
+			//
+			if(k==1){
+				// intial guesses
+				X = Trajectory(0,0,0); //Initial estimate,  set 0
+				P =Trajectory(1,1,1); //set error variance,set 1
+			}
+			else {
+				//time update（prediction）
+				X_ = X; //X_(k) = X(k-1);
+				P_ = P+Q; //P_(k) = P(k-1)+Q;
+				// measurement update（correction）
+				K = P_/( P_+R ); //gain;K(k) = P_(k)/( P_(k)+R );
+				X = X_+K*(z-X_); //z-X_ is residual,X(k) = X_(k)+K(k)*(z(k)-X_(k));
+				P = (Trajectory(1,1,1)-K)*P_; //P(k) = (1-K(k))*P_(k);
+			}
+			//smoothed_trajectory.push_back(X);
+			out_smoothed_trajectory << k << " " << X.x << " " << X.y << " " << X.a << endl;
+			//-
+			// target - current
+			double diff_x = X.x - x;//
+			double diff_y = X.y - y;
+			double diff_a = X.a - a;
 
-		// translation + rotation only
-		Mat T = estimateRigidTransform(prev_corner2, cur_corner2, false); // false = rigid transform, no scaling/shearing
+			dx = dx + diff_x;
+			dy = dy + diff_y;
+			da = da + diff_a;
 
-		// in rare cases no transform is found. We'll just use the last known good transform.
-		if(T.data == NULL) {
-			last_T.copyTo(T);
-		}
+			//new_prev_to_cur_transform.push_back(TransformParam(dx, dy, da));
+			//
+			out_new_transform << k << " " << dx << " " << dy << " " << da << endl;
+			//
+			T.at<double>(0,0) = cos(da);
+			T.at<double>(0,1) = -sin(da);
+			T.at<double>(1,0) = sin(da);
+			T.at<double>(1,1) = cos(da);
+			T.at<double>(0,2) = dx;
+			T.at<double>(1,2) = dy;
+			//CUDA WarpAffine
+			cuda::GpuMat d_prev(prev);
+			cuda::GpuMat d_output;
+			cuda::warpAffine(d_prev, d_output, T, d_prev.size());
+			d_output.download(output);
+			//END CUDA WarpAffine
 
-		T.copyTo(last_T);
-
-		// decompose T
-		double dx = T.at<double>(0,2);
-		double dy = T.at<double>(1,2);
-		double da = atan2(T.at<double>(1,0), T.at<double>(0,0));
-		//
-		//prev_to_cur_transform.push_back(TransformParam(dx, dy, da));
-
-		out_transform << k << " " << dx << " " << dy << " " << da << endl;
-		//
-		// Accumulated frame to frame transform
-		x += dx;
-		y += dy;
-		a += da;
-		//trajectory.push_back(Trajectory(x,y,a));
-		//
-		out_trajectory << k << " " << x << " " << y << " " << a << endl;
-		//
-		z = Trajectory(x,y,a);
-		//
-		if(k==1){
-			// intial guesses
-			X = Trajectory(0,0,0); //Initial estimate,  set 0
-			P =Trajectory(1,1,1); //set error variance,set 1
-		}
-		else
-		{
-			//time update（prediction）
-			X_ = X; //X_(k) = X(k-1);
-			P_ = P+Q; //P_(k) = P(k-1)+Q;
-			// measurement update（correction）
-			K = P_/( P_+R ); //gain;K(k) = P_(k)/( P_(k)+R );
-			X = X_+K*(z-X_); //z-X_ is residual,X(k) = X_(k)+K(k)*(z(k)-X_(k));
-			P = (Trajectory(1,1,1)-K)*P_; //P(k) = (1-K(k))*P_(k);
-		}
-		//smoothed_trajectory.push_back(X);
-		out_smoothed_trajectory << k << " " << X.x << " " << X.y << " " << X.a << endl;
-		//-
-		// target - current
-		double diff_x = X.x - x;//
-		double diff_y = X.y - y;
-		double diff_a = X.a - a;
-
-		dx = dx + diff_x;
-		dy = dy + diff_y;
-		da = da + diff_a;
-
-		//new_prev_to_cur_transform.push_back(TransformParam(dx, dy, da));
-		//
-		out_new_transform << k << " " << dx << " " << dy << " " << da << endl;
-		//
-		T.at<double>(0,0) = cos(da);
-		T.at<double>(0,1) = -sin(da);
-		T.at<double>(1,0) = sin(da);
-		T.at<double>(1,1) = cos(da);
-
-		T.at<double>(0,2) = dx;
-		T.at<double>(1,2) = dy;
-
-		//CUDA WarpAffine
-		cuda::GpuMat d_prev(prev);
-		cuda::GpuMat d_output;
-		cuda::warpAffine(d_prev, d_output, T, d_prev.size());
-		d_output.download(output);
-		//END CUDA WarpAffine
-
-		//warpAffine(prev, output, T, cur.size());
+			//seq warpaffine
+			//warpAffine(prev, output, T, cur.size());
+			//end seq warpaffine
 		}
 		else {
 			output=cur;
@@ -277,7 +304,7 @@ int main(int argc, char **argv)
 		// Resize output back to cur size, for better side by side comparison
 		resize(output, output, cur.size());
 
-		// Now draw the original and stablised side by side for coolness
+		// Now draw the original and stabilised side by side for coolness
 		Mat canvas = Mat::zeros(cur.rows, cur.cols*2+10, cur.type());
 
 		prev.copyTo(canvas(Range::all(), Range(0, output.cols)));
@@ -289,19 +316,28 @@ int main(int argc, char **argv)
 		}
 		//outputVideo<<canvas;
 
-		imshow("stabilzed", canvas);
+		imshow("stabilized", canvas);
 		// Storing Footage
 //		footage.write(output);
 		//End storing footage
 
 
-		//Piping output to ffmpeg
-//		Mat stdoutArray = output.reshape(0, 1);
+//		//Piping output to ffmpeg
+//			//CUDA code for reshape
+//			cuda::GpuMat d_tempOP;
+//			cuda::createContinuous(output.rows, output.cols, output.type(), d_tempOP);
+//			cuda::GpuMat d_stdoutArray = d_tempOP.reshape(0, 1);
+//			Mat stdoutArray;
+//			d_stdoutArray.download(stdoutArray);
+//			//end CUDA code for reshape
+//
+////			//seq code for reshape
+////		Mat stdoutArray = output.reshape(0, 1);
+////			//end seq code for reshape
+//
 //		string stdoutString((char*)stdoutArray.data, stdoutArray.total()*stdoutArray.elemSize());
-//		cout << stdoutString;
+//		frameBuffer.push_back(stdoutString);
 //		//End piping output to ffmpeg
-
-
 
 		waitKey(10);
 		//
@@ -310,8 +346,11 @@ int main(int argc, char **argv)
 
 		cout << "Frame: " << k << "/" << max_frames << " - good optical flow: " << prev_corner2.size() << endl;
 		k++;
-
 	}
+
+	//at this point we have frameBuffer which contains the frames in a string format
+	//we output this frameBuffer on stdout using a thread .
+
 	return 0;
 }
 

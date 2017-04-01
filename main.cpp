@@ -4,11 +4,10 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
-#include <vector>
-#include <deque>
-#include <pthread.h>
-#include <sched.h>
-#include <unistd.h>
+#include <map>
+
+#include <time.h>
+#include <cmath>
 
 //for CUDA GpuMat
 #include <opencv2/core/cuda.hpp>
@@ -16,28 +15,13 @@
 //for CUDA corner detection
 #include <opencv2/cudaimgproc.hpp>
 
+
+#include "PracticalSocket.h"
+#include <cstdlib>
+#include "config.h"
+
 using namespace std;
 using namespace cv;
-
-//void *th_func(void * arg) {
-//	//typecasting the obtained reference
-//	deque <string> *frameBuffer_ = (deque<string>*)arg;
-//	cpu_set_t cpuset;
-//	int cpu=2;
-//	CPU_ZERO(&cpuset);
-//	CPU_SET(cpu,&cpuset);
-//
-//	sched_setaffinity(0, sizeof(cpuset), &cpuset);
-//	sleep(2);
-//	while(true){
-//		if(frameBuffer_->empty()) {
-//			continue;
-//		}
-//		cout << frameBuffer_->at(0);
-//		frameBuffer_->pop_front();
-//	}
-//	return 0;
-//}
 
 const int HORIZONTAL_BORDER_CROP = 40; // In pixels. Crops the border to reduce the black borders from stabilisation being too noticeable.
 
@@ -98,9 +82,11 @@ struct Trajectory
 //
 int main(int argc, char **argv)
 {
-
-//	//for streaming on a char vector
-//	 deque <string> frameBuffer;
+	//FPS declarations
+    int64 now, then;
+    double elapsed_seconds;
+    double tickspersecond = cvGetTickFrequency()*1.0e6;
+	string temp;
 
 	// For further analysis
 	ofstream out_transform("prev_to_cur_transformation.txt");
@@ -108,10 +94,28 @@ int main(int argc, char **argv)
 	ofstream out_smoothed_trajectory("smoothed_trajectory.txt");
 	ofstream out_new_transform("new_prev_to_cur_transformation.txt");
 
-	string srcIP = "192.168.0.106";
+	string srcIP = "192.168.1.37";
 	string srcURL = "http://" + srcIP + ":8080/videofeed?dummy=param.mpjg";
-	string testVideo = "/home/srp3003/v3.avi";
-	VideoCapture cap(0);
+	map<int, string> testVideos;
+	testVideos[0] = srcURL;
+	testVideos[1] = "/home/srp3003/Desktop/Samples/s1.avi";
+	testVideos[2] = "/home/srp3003/Desktop/Samples/s2.avi";
+	testVideos[3] = "/home/srp3003/Desktop/Samples/s3.avi";
+	testVideos[4] = "/home/srp3003/Desktop/Samples/s4.avi";
+	testVideos[5] = "/home/srp3003/Desktop/Samples/s5.avi";
+	testVideos[6] = "/home/srp3003/Desktop/Samples/s6.avi";
+	testVideos[7] = "/home/srp3003/Desktop/Samples/s7.avi";
+
+	string testVideo;
+	int option;
+	cout << "Enter the video name : " ;
+	cin >> option;
+	VideoCapture cap(testVideos[option]);
+
+//	//test with webcam
+//	VideoCapture cap(0);
+
+
 	assert(cap.isOpened());
 
 	Mat cur, cur_grey;
@@ -121,8 +125,8 @@ int main(int argc, char **argv)
 	cvtColor(prev, prev_grey, COLOR_BGR2GRAY);
 
 	// Storing the footage
-	Size s = Size((int)cap.get(CV_CAP_PROP_FRAME_WIDTH), (int)cap.get(CV_CAP_PROP_FRAME_HEIGHT));
-	VideoWriter footage("Footage.avi", CV_FOURCC('M','J','P','G'),24,s,true);
+//	Size s = Size((int)cap.get(CV_CAP_PROP_FRAME_WIDTH), (int)cap.get(CV_CAP_PROP_FRAME_HEIGHT));
+//	VideoWriter footage("Footage.avi", CV_FOURCC('M','J','P','G'),24,s,true);
 	// End storing the footage
 
 	// Step 1 - Get previous to current frame transformation (dx, dy, da) for all frames
@@ -154,8 +158,8 @@ int main(int argc, char **argv)
 	Mat T(2,3,CV_64F);
 
 	int vert_border = HORIZONTAL_BORDER_CROP * prev.rows / prev.cols; // get the aspect ratio correct
-	VideoWriter outputVideo;
-	outputVideo.open("compare.avi" , CV_FOURCC('X','V','I','D'), 24,cvSize(cur.rows, cur.cols*2+10), true);
+//	VideoWriter outputVideo;
+//	outputVideo.open("compare.avi" , CV_FOURCC('X','V','I','D'), 24,cvSize(cur.rows, cur.cols*2+10), true);
 	//
 	int k=1;
 	int max_frames = cap.get(CV_CAP_PROP_FRAME_COUNT);
@@ -163,16 +167,24 @@ int main(int argc, char **argv)
 	Mat prev_grey_,cur_grey_;
 	Mat output;
 
-//	//Testing thread
-//	pthread_t thread;
-//	pthread_create(&thread,NULL,th_func,(void*)&frameBuffer);
+	// UDP Socket configuration
+	string servAddress = "192.168.1.255"; // First arg: server address
+	unsigned short servPort = Socket::resolveService("12345", "udp");
+    UDPSocket sock;
+	int jpegqual =  ENCODE_QUALITY; // Compression Parameter
+    Mat frame, send;
+    vector < uchar > encoded;
+    //end UDP Socket configuration
+
 
 	while(true) {
 		cap >> cur;
+
+		then = cvGetTickCount();
+
 		if(cur.data == NULL) {
 			break;
 		}
-
 		cvtColor(cur, cur_grey, COLOR_BGR2GRAY);
 
 		vector <Point2f> prev_corner2, cur_corner2;
@@ -181,7 +193,7 @@ int main(int argc, char **argv)
 
 		cuda::GpuMat d_prev_corner;
 		cuda::GpuMat d_prev_grey(prev_grey);
-		Ptr<cuda::CornersDetector> cudaCornerDetector = cuda::createGoodFeaturesToTrackDetector(CV_8UC1, 1000, 0.01, 30);
+		Ptr<cuda::CornersDetector> cudaCornerDetector = cuda::createGoodFeaturesToTrackDetector(CV_8UC1, 500, 0.01, 30);
 		cudaCornerDetector->detect(d_prev_grey, d_prev_corner);
 		vector <Point2f> prev_corner(d_prev_corner.cols);
 		Mat prev_corner_mat(1,d_prev_corner.cols, CV_32FC2, (void*) &prev_corner[0]);
@@ -223,78 +235,84 @@ int main(int argc, char **argv)
 
 
 		if(prev_corner2.size()>10) {
-			// translation + rotation only
-			Mat T = estimateRigidTransform(prev_corner2, cur_corner2, false); // false = rigid transform, no scaling/shearing
-			// in rare cases no transform is found. We'll just use the last known good transform.
-			if(T.data == NULL) {
-				last_T.copyTo(T);
-			}
-			T.copyTo(last_T);
-			// decompose T
-			double dx = T.at<double>(0,2);
-			double dy = T.at<double>(1,2);
-			double da = atan2(T.at<double>(1,0), T.at<double>(0,0));
-			//
-			//prev_to_cur_transform.push_back(TransformParam(dx, dy, da));
 
-			out_transform << k << " " << dx << " " << dy << " " << da << endl;
-			//
-			// Accumulated frame to frame transform
-			x += dx;
-			y += dy;
-			a += da;
-			//trajectory.push_back(Trajectory(x,y,a));
-			//
-			out_trajectory << k << " " << x << " " << y << " " << a << endl;
-			//
-			z = Trajectory(x,y,a);
-			//
-			if(k==1){
-				// intial guesses
-				X = Trajectory(0,0,0); //Initial estimate,  set 0
-				P =Trajectory(1,1,1); //set error variance,set 1
-			}
-			else {
-				//time update（prediction）
-				X_ = X; //X_(k) = X(k-1);
-				P_ = P+Q; //P_(k) = P(k-1)+Q;
-				// measurement update（correction）
-				K = P_/( P_+R ); //gain;K(k) = P_(k)/( P_(k)+R );
-				X = X_+K*(z-X_); //z-X_ is residual,X(k) = X_(k)+K(k)*(z(k)-X_(k));
-				P = (Trajectory(1,1,1)-K)*P_; //P(k) = (1-K(k))*P_(k);
-			}
-			//smoothed_trajectory.push_back(X);
-			out_smoothed_trajectory << k << " " << X.x << " " << X.y << " " << X.a << endl;
-			//-
-			// target - current
-			double diff_x = X.x - x;//
-			double diff_y = X.y - y;
-			double diff_a = X.a - a;
 
-			dx = dx + diff_x;
-			dy = dy + diff_y;
-			da = da + diff_a;
+		// translation + rotation only
+		Mat T = estimateRigidTransform(prev_corner2, cur_corner2, false); // false = rigid transform, no scaling/shearing
 
-			//new_prev_to_cur_transform.push_back(TransformParam(dx, dy, da));
-			//
-			out_new_transform << k << " " << dx << " " << dy << " " << da << endl;
-			//
-			T.at<double>(0,0) = cos(da);
-			T.at<double>(0,1) = -sin(da);
-			T.at<double>(1,0) = sin(da);
-			T.at<double>(1,1) = cos(da);
-			T.at<double>(0,2) = dx;
-			T.at<double>(1,2) = dy;
-			//CUDA WarpAffine
-			cuda::GpuMat d_prev(prev);
-			cuda::GpuMat d_output;
-			cuda::warpAffine(d_prev, d_output, T, d_prev.size());
-			d_output.download(output);
-			//END CUDA WarpAffine
+		// in rare cases no transform is found. We'll just use the last known good transform.
+		if(T.data == NULL) {
+			last_T.copyTo(T);
+		}
 
-			//seq warpaffine
-			//warpAffine(prev, output, T, cur.size());
-			//end seq warpaffine
+		T.copyTo(last_T);
+
+		// decompose T
+		double dx = T.at<double>(0,2);
+		double dy = T.at<double>(1,2);
+		double da = atan2(T.at<double>(1,0), T.at<double>(0,0));
+		//
+		//prev_to_cur_transform.push_back(TransformParam(dx, dy, da));
+
+		out_transform << k << " " << dx << " " << dy << " " << da << endl;
+		//
+		// Accumulated frame to frame transform
+		x += dx;
+		y += dy;
+		a += da;
+		//trajectory.push_back(Trajectory(x,y,a));
+		//
+		out_trajectory << k << " " << x << " " << y << " " << a << endl;
+		//
+		z = Trajectory(x,y,a);
+		//
+		if(k==1){
+			// intial guesses
+			X = Trajectory(0,0,0); //Initial estimate,  set 0
+			P =Trajectory(1,1,1); //set error variance,set 1
+		}
+		else
+		{
+			//time update（prediction）
+			X_ = X; //X_(k) = X(k-1);
+			P_ = P+Q; //P_(k) = P(k-1)+Q;
+			// measurement update（correction）
+			K = P_/( P_+R ); //gain;K(k) = P_(k)/( P_(k)+R );
+			X = X_+K*(z-X_); //z-X_ is residual,X(k) = X_(k)+K(k)*(z(k)-X_(k));
+			P = (Trajectory(1,1,1)-K)*P_; //P(k) = (1-K(k))*P_(k);
+		}
+		//smoothed_trajectory.push_back(X);
+		out_smoothed_trajectory << k << " " << X.x << " " << X.y << " " << X.a << endl;
+		//-
+		// target - current
+		double diff_x = X.x - x;//
+		double diff_y = X.y - y;
+		double diff_a = X.a - a;
+
+		dx = dx + diff_x;
+		dy = dy + diff_y;
+		da = da + diff_a;
+
+		//new_prev_to_cur_transform.push_back(TransformParam(dx, dy, da));
+		//
+		out_new_transform << k << " " << dx << " " << dy << " " << da << endl;
+		//
+		T.at<double>(0,0) = cos(da);
+		T.at<double>(0,1) = -sin(da);
+		T.at<double>(1,0) = sin(da);
+		T.at<double>(1,1) = cos(da);
+
+		T.at<double>(0,2) = dx;
+		T.at<double>(1,2) = dy;
+
+		//CUDA WarpAffine
+		cuda::GpuMat d_prev(prev);
+		cuda::GpuMat d_output;
+		cuda::warpAffine(d_prev, d_output, T, d_prev.size());
+		d_output.download(output);
+		//END CUDA WarpAffine
+
+		//warpAffine(prev, output, T, cur.size());
 		}
 		else {
 			output=cur;
@@ -304,7 +322,7 @@ int main(int argc, char **argv)
 		// Resize output back to cur size, for better side by side comparison
 		resize(output, output, cur.size());
 
-		// Now draw the original and stabilised side by side for coolness
+		// Now draw the original and stablised side by side for coolness
 		Mat canvas = Mat::zeros(cur.rows, cur.cols*2+10, cur.type());
 
 		prev.copyTo(canvas(Range::all(), Range(0, output.cols)));
@@ -316,41 +334,52 @@ int main(int argc, char **argv)
 		}
 		//outputVideo<<canvas;
 
-		imshow("stabilized", canvas);
+		//display fps
+		now = cvGetTickCount();
+		elapsed_seconds = (double)(now - then) /tickspersecond;
+
+		stringstream s;
+		s << 1/elapsed_seconds;
+
+		temp = s.str();
+		putText(canvas, temp, Point2f (30,30), FONT_HERSHEY_PLAIN, 2, Scalar(0,0,255,255));
+		//end display fps
+
+		imshow("stabilzed", canvas);
 		// Storing Footage
 //		footage.write(output);
 		//End storing footage
 
+		//SOCKET STREAMING
+		frame=output;
+		resize(frame,send,Size(FRAME_WIDTH, FRAME_HEIGHT), 0, 0, INTER_LINEAR);
+		vector < int > compression_params;
+		compression_params.push_back(CV_IMWRITE_JPEG_QUALITY);
+		compression_params.push_back(jpegqual);
 
-//		//Piping output to ffmpeg
-//			//CUDA code for reshape
-//			cuda::GpuMat d_tempOP;
-//			cuda::createContinuous(output.rows, output.cols, output.type(), d_tempOP);
-//			cuda::GpuMat d_stdoutArray = d_tempOP.reshape(0, 1);
-//			Mat stdoutArray;
-//			d_stdoutArray.download(stdoutArray);
-//			//end CUDA code for reshape
-//
-////			//seq code for reshape
-////		Mat stdoutArray = output.reshape(0, 1);
-////			//end seq code for reshape
-//
-//		string stdoutString((char*)stdoutArray.data, stdoutArray.total()*stdoutArray.elemSize());
-//		frameBuffer.push_back(stdoutString);
-//		//End piping output to ffmpeg
+		imencode(".jpg", send, encoded, compression_params);
+//		imshow("ServerOUPUT", send);
+		int total_pack = 1 + (encoded.size() - 1) / PACK_SIZE;
 
-		waitKey(10);
-		//
+		int ibuf[1];
+		ibuf[0] = total_pack;
+		sock.sendTo(ibuf, sizeof(int), servAddress, servPort);
+		for (int i = 0; i < total_pack; i++)
+			sock.sendTo( & encoded[i * PACK_SIZE], PACK_SIZE, servAddress, servPort);
+		//END SOCKET STREAMING
+
 		prev = cur.clone();//cur.copyTo(prev);
 		cur_grey.copyTo(prev_grey);
 
-		cout << "Frame: " << k << "/" << max_frames << " - good optical flow: " << prev_corner2.size() << endl;
+		cout << "Frame: " << k << "/" << max_frames << " - good optical flow: " << prev_corner2.size();
+		if(prev_corner2.size() <= 10)
+			cout << "PANNING";
+		cout << endl;
 		k++;
+
+		if(waitKey(10)>0) break;
 	}
-
-	//at this point we have frameBuffer which contains the frames in a string format
-	//we output this frameBuffer on stdout using a thread .
-
 	return 0;
 }
+
 

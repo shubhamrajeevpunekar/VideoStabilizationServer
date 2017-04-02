@@ -9,6 +9,13 @@
 #include <time.h>
 #include <cmath>
 
+#include <stdio.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
 //for CUDA GpuMat
 #include <opencv2/core/cuda.hpp>
 
@@ -23,13 +30,24 @@
 using namespace std;
 using namespace cv;
 
-const int HORIZONTAL_BORDER_CROP = 40; // In pixels. Crops the border to reduce the black borders from stabilisation being too noticeable.
+const int HORIZONTAL_BORDER_CROP = 80; // In pixels. Crops the border to reduce the black borders from stabilisation being too noticeable.
 
-// 1. Get previous to current frame transformation (dx, dy, da) for all frames
-// 2. Accumulate the transformations to get the image trajectory
-// 3. Smooth out the trajectory using an averaging window
-// 4. Generate new set of previous to current transform, such that the trajectory ends up being the same as the smoothed trajectory
-// 5. Apply the new transformation to the video
+
+//Graph Data
+struct GraphData{
+    double dx, dy, da, dx_corrected, dy_corrected, da_corrected;
+    GraphData(double d2, double d3, double d4, double d5, double d6, double d7) {
+        dx = d2;
+        dy = d3;
+        da = d4;
+        dx_corrected = d5;
+        dy_corrected = d6;
+        da_corrected = d7;
+    }
+    GraphData(){}
+};
+
+//END Graph Data
 
 struct TransformParam
 {
@@ -86,7 +104,34 @@ int main(int argc, char **argv)
     int64 now, then;
     double elapsed_seconds;
     double tickspersecond = cvGetTickFrequency()*1.0e6;
-	string temp;
+	string tempFPS, tempPAN;
+
+	//Graph data socket
+	cout << "Waiting for the client to connect -> " << endl;
+	int server_fd, new_socket;
+	struct sockaddr_in address;
+	int opt = 1;
+	int addrlen = sizeof(address);
+
+	server_fd = socket(AF_INET, SOCK_STREAM, 0);
+	setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt));
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = INADDR_ANY;
+	address.sin_port = htons(1234);
+
+	bind(server_fd, (struct sockaddr *)&address, sizeof(address));
+	listen(server_fd, 3);
+	new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen);
+	cout <<"Connection from client accepted ->" << endl;
+	//end Graph data socket
+
+	// Graph parameters
+	double graphDx, graphDy, graphDa, newGraphDx, newGraphDy, newGraphDa;
+	// end Graph parameters
+
+    // Panning parameter : Max tracked points per frame
+    int panningParameter;
+    // end Panning parameter
 
 	// For further analysis
 	ofstream out_transform("prev_to_cur_transformation.txt");
@@ -94,10 +139,8 @@ int main(int argc, char **argv)
 	ofstream out_smoothed_trajectory("smoothed_trajectory.txt");
 	ofstream out_new_transform("new_prev_to_cur_transformation.txt");
 
-	string srcIP = "192.168.1.37";
-	string srcURL = "http://" + srcIP + ":8080/videofeed?dummy=param.mpjg";
+	string srcIP ;
 	map<int, string> testVideos;
-	testVideos[0] = srcURL;
 	testVideos[1] = "/home/srp3003/Desktop/Samples/s1.avi";
 	testVideos[2] = "/home/srp3003/Desktop/Samples/s2.avi";
 	testVideos[3] = "/home/srp3003/Desktop/Samples/s3.avi";
@@ -107,14 +150,51 @@ int main(int argc, char **argv)
 	testVideos[7] = "/home/srp3003/Desktop/Samples/s7.avi";
 
 	string testVideo;
+	//GUI goes here
+
+	VideoCapture cap;
 	int option;
-	cout << "Enter the video name : " ;
+	cout << "1. Close objects" << endl;
+	cout << "2. Drone footage" << endl;
+	cout << "3. Bike Footage" << endl;
+	cout << "4. Bike footage with close objects and rotation" << endl;
+	cout << "5. Footage with varied focus" << endl;
+	cout << "6. Hackathon footage : Jitter" << endl;
+	cout << "7. Hackathon footage : Rotation7" << endl;
+	cout << "Enter video # (0 for IP cam) : " ;
 	cin >> option;
-	VideoCapture cap(testVideos[option]);
+	if(option == 10)
+		cap.open(0);
+	else if (option == 0) {
+		cout << "Enter the IP of the camera : ";
+		cin >> srcIP;
+		string srcURL = "http://" + srcIP + ":8080/videofeed?dummy=param.mpjg";
+		cap.open(srcURL);
+	}
+	else
+		cap.open(testVideos[option]);
 
 //	//test with webcam
 //	VideoCapture cap(0);
 
+	// Setting the panning parameter
+	if(option == 0)
+		panningParameter = 10;
+	else if(option == 1)
+		panningParameter = 10;
+	else if(option == 2)
+		panningParameter = 10;
+	else if(option == 3)
+		panningParameter = 10;
+	else if(option == 4)
+		panningParameter = 10;
+	else if(option == 5)
+		panningParameter = 10;
+	else if(option == 6)
+		panningParameter == 10;
+	else if(option == 10)
+		panningParameter == 10;
+	// end setting panning paramter
 
 	assert(cap.isOpened());
 
@@ -176,12 +256,18 @@ int main(int argc, char **argv)
     vector < uchar > encoded;
     //end UDP Socket configuration
 
+    // UDP Socket config for jittery video
+    string servAddressIn = "192.168.1.255";
+    unsigned short servPortIn = Socket::resolveService("12346", "udp");
+    UDPSocket sockIn;
+    int jpegqualIn = ENCODE_QUALITY;
+    Mat frameIn, sendIn;
+    vector <uchar> encodedIn;
+    // end socket config for stabilised video
 
 	while(true) {
 		cap >> cur;
-
 		then = cvGetTickCount();
-
 		if(cur.data == NULL) {
 			break;
 		}
@@ -234,7 +320,7 @@ int main(int argc, char **argv)
 		}
 
 
-		if(prev_corner2.size()>10) {
+		if(prev_corner2.size()>0) {
 
 
 		// translation + rotation only
@@ -253,6 +339,12 @@ int main(int argc, char **argv)
 		double da = atan2(T.at<double>(1,0), T.at<double>(0,0));
 		//
 		//prev_to_cur_transform.push_back(TransformParam(dx, dy, da));
+
+		// Graph dx, dy, da values
+		graphDx = dx;
+		graphDy = dy;
+		graphDa = da;
+		// end graph values
 
 		out_transform << k << " " << dx << " " << dy << " " << da << endl;
 		//
@@ -293,6 +385,12 @@ int main(int argc, char **argv)
 		dy = dy + diff_y;
 		da = da + diff_a;
 
+		// new Graph values
+		newGraphDx = dx;
+		newGraphDy = dy;
+		newGraphDa = da;
+
+		// end new Graph values
 		//new_prev_to_cur_transform.push_back(TransformParam(dx, dy, da));
 		//
 		out_new_transform << k << " " << dx << " " << dy << " " << da << endl;
@@ -313,9 +411,11 @@ int main(int argc, char **argv)
 		//END CUDA WarpAffine
 
 		//warpAffine(prev, output, T, cur.size());
+		tempPAN = "";
 		}
 		else {
 			output=cur;
+			tempPAN = "PANNING";
 		}
 		output = output(Range(vert_border, output.rows-vert_border), Range(HORIZONTAL_BORDER_CROP, output.cols-HORIZONTAL_BORDER_CROP));
 
@@ -324,6 +424,13 @@ int main(int argc, char **argv)
 
 		// Now draw the original and stablised side by side for coolness
 		Mat canvas = Mat::zeros(cur.rows, cur.cols*2+10, cur.type());
+
+		//Displaying the corners in input and ouptut
+		for(int i = 0;i<prev_corner2.size();i++) {
+			circle(prev, prev_corner[i], 3, Scalar(0,0,255),CV_FILLED);
+//			circle(prev, prev_corner2[i], 3, Scalar(255,255,255), CV_FILLED);
+		}
+		//end display of corners
 
 		prev.copyTo(canvas(Range::all(), Range(0, output.cols)));
 		output.copyTo(canvas(Range::all(), Range(output.cols+10, output.cols*2+10)));
@@ -341,9 +448,13 @@ int main(int argc, char **argv)
 		stringstream s;
 		s << 1/elapsed_seconds;
 
-		temp = s.str();
-		putText(canvas, temp, Point2f (30,30), FONT_HERSHEY_PLAIN, 2, Scalar(0,0,255,255));
+		tempFPS = s.str();
+		putText(canvas, tempFPS, Point2f (30,30), FONT_HERSHEY_PLAIN, 2, Scalar(0,0,255,255));
 		//end display fps
+		//display panning
+		putText(canvas, tempPAN, Point2f(300,30), FONT_HERSHEY_PLAIN, 3, Scalar(0,0,255,255));
+		//end display panning
+
 
 		imshow("stabilzed", canvas);
 		// Storing Footage
@@ -368,13 +479,35 @@ int main(int argc, char **argv)
 			sock.sendTo( & encoded[i * PACK_SIZE], PACK_SIZE, servAddress, servPort);
 		//END SOCKET STREAMING
 
+		//SOCKET STREAMING For input
+		frameIn=prev;
+		resize(frameIn,sendIn,Size(FRAME_WIDTH, FRAME_HEIGHT), 0, 0, INTER_LINEAR);
+		vector < int > compression_paramsIn;
+		compression_paramsIn.push_back(CV_IMWRITE_JPEG_QUALITY);
+		compression_paramsIn.push_back(jpegqualIn);
+
+		imencode(".jpg", sendIn, encodedIn, compression_paramsIn);
+//		imshow("ServerOUPUT", send);
+		int total_packIn = 1 + (encodedIn.size() - 1) / PACK_SIZE;
+
+		int ibufIn[1];
+		ibufIn[0] = total_packIn;
+		sockIn.sendTo(ibufIn, sizeof(int), servAddressIn, servPortIn);
+		for (int i = 0; i < total_packIn; i++)
+			sockIn.sendTo( & encodedIn[i * PACK_SIZE], PACK_SIZE, servAddressIn, servPortIn);
+		//END SOCKET STREAMING for input
+
+
+		// Graph Data streaming
+		GraphData gd(graphDx, graphDy, (180*graphDa)/3.14, newGraphDx, newGraphDy, (180*newGraphDa)/3.14);
+        ::send(new_socket, &gd, sizeof(GraphData), 0);
+		// END graph data streaming
+
 		prev = cur.clone();//cur.copyTo(prev);
 		cur_grey.copyTo(prev_grey);
 
-		cout << "Frame: " << k << "/" << max_frames << " - good optical flow: " << prev_corner2.size();
-		if(prev_corner2.size() <= 10)
-			cout << "PANNING";
-		cout << endl;
+		cout << "Frame: " << k << "/" << max_frames << " - good optical flow: " << prev_corner2.size() << endl;
+
 		k++;
 
 		if(waitKey(10)>0) break;

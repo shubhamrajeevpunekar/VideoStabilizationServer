@@ -1,0 +1,112 @@
+#+TITLE: Installations for Hackathon : Video Stabilization
+* CUDA  - 8.0
+[[https://developer.nvidia.com/cuda-downloads][CUDA Downloads]]
+[[http://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#ubuntu-installation][CUDA Installtion]]
+** Native distribution support in CUDA 8.0
+- Distribution - Ubuntu 16.04
+- Kernel - 4.4.0
+- GCC - 5.3.1
+- GLIBC - 2.23
+** Pre-installation
+*** Verify you have CUDA-enable GPU
+lspci | grep -i nvidia 
+=> should spit out a line for NVIDIA hardware
+*** Verify you have a supported version of Linux
+uname -m && cat /etc/*release
+=>x86_64 indicates 64 bit system, remainder gives information about distribution
+*** Verify the system has gcc installed
+gcc --version
+=>required greater than or equal to 5.3.1
+*** Verify the system has correct kernel headers and development packages installed
+sudo apt-get install linux-headers-$(uname -r)
+** Installation
+#+NOTE : Two methods of installation, runfile and package manager. Package manager used here. This unistalls older nvidia drivers and installs the latest required one, from the dowloaded package. Otherwise, runfile installtion installs the NVIDIA Driver(nouveau drivers to be disabled manually), CUDA Toolkit and CUDA Samples via an interactive text-based interface. Refer to "CUDA Installtion" link.
+*** Handle conflicting installation methods
+**** For a toolkit runfile installtion
+sudo /usr/local/cuda-X.Y/bin/uninstall_cuda_X.Y.pl
+**** For a driver runfile installtion
+sudo /usr/bin/nvidia-uninstall
+**** For uninstalling RPM/Deb installation
+sudo apt-get --purge remove <package-name>
+*** Package manager installtion for Ubuntu
+- sudo dpkg -i cuda-repo-<distro>_<version>_<architecture>.deb (in this case, cuda-repo-ubuntu1604-8-0-local-ga2_8.0.61-1_amd64)
+- sudo apt-get update
+- sudo apt-get install cuda
+#+NOTE: The installation takes care of uninstalling the old drivers and installing the new required ones.
+** Post-installtion Actions
+*** Mandatory actions
+Environment Setup
+- export PATH=/usr/local/cuda-8.0/bin${PATH:+:${PATH}}
+- export LD_LIBRARY_PATH=/usr/local/cuda-8.0/lib64\
+                         ${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
+(second step needed especially if installed using runfile method)
+Add these two lines to your terminal rc file. (.zshrc)
+*** Recommended actions
+**** Install writable samples
+cuda-install-samples-8.0.sh <dir>
+**** Verify the installation
+***** Verifying the driver version
+cat /proc/driver/nvidia/version
+=> should spit out a line starting with NVRM version
+***** Compiling the examples
+- Checking nvcc version
+  nvcc -V
+- nvcc calls gcc compiler for C code, NVIDIA PTX compiler for CUDA code
+- In the <samples-dir>/NVIDIA_CUDA-8.0_Samples, 
+  make 
+  => this builds the examples under <samples-dir>/NVIDIA_CUDA-8.0_Samples/bin
+***** Running the binaries
+Execute following binaries under <samples-dir>/NVIDIA_CUDA-8.0_Samples/bin to verify installation
+- deviceQuery => CUDA capable NVIDIA GPU found
+- bandwidthTest => system and CUDA capable devices are communicating correctly
+* OpenCV - 3.2.0
+[[https://github.com/BVLC/caffe/wiki/OpenCV-3.1-Installation-Guide-on-Ubuntu-16.04][OpenCV Installation with CUDA #1]]
+[[http://blog.aicry.com/ubuntu-14-04-install-opencv-with-cuda/][OpenCV Installation with CUDA #2]] (for cmake flags)
+[[http://answers.opencv.org/question/19421/build-problem-latest-opencv-cuda-55/][OpcvCV Installation with CUDA #3]] (for cmake flags)
+[[http://docs.opencv.org/3.1.0/d7/d9f/tutorial_linux_install.html][Official documentation for OpenCV installtion on Linux]]
+** Install the dependencies
+#+NOTE : Do not install ffmpeg if you have compiled it and installed it separately already, with NVIDIA Video Codec SDK. Otherwise, install ffmpeg as well
+sudo apt-get install --assume-yes ffmpeg
+#+NOTE : If ffmpeg was compiled from source, chances are you also compiled x264 for it. In that case do not install x264 again. Otherwise, install it as follows:
+sudo apt-get install x264
+sudo apt-get install --assume-yes build-essential cmake git
+sudo apt-get install --assume-yes build-essential pkg-config unzip qtbase5-dev python-dev python3-dev python-numpy python3-numpy
+sudo apt-get install --assume-yes libopencv-dev libgtk-3-dev libdc1394-22 libdc1394-22-dev libjpeg-dev libpng12-dev libtiff5-dev libjasper-dev
+sudo apt-get install --assume-yes libavcodec-dev libavformat-dev libswscale-dev libxine2-dev libgstreamer0.10-dev libgstreamer-plugins-base0.10-dev
+sudo apt-get install --assume-yes libv4l-dev libtbb-dev libfaac-dev libmp3lame-dev libopencore-amrnb-dev libopencore-amrwb-dev libtheora-dev
+sudo apt-get install --assume-yes libvorbis-dev libxvidcore-dev v4l-utils
+sudo apt-get install --assume-yes yasm 
+** Download the source
+git clone https://github.com/opencv/opencv.git
+#+NOTE: Do not download the source from http://opencv.org/downloads.html. The official OpenCV does not support CUDA 8.0 (atleast uptil OpenCV 3.1)
+** Building the source
+Enter the unpacked directory. Execute : 
+mkdir build
+cd build/
+cmake -D CMAKE_BUILD_TYPE=RELEASE -D BUILD_EXAMPLES=ON -D CMAKE_INSTALL_PREFIX=/usr/local -D WITH_TBB=ON  -D BUILD_NEW_PYTHON_SUPPORT=ON -D WITH_V4L=ON -D WITH_FFMPEG=OFF -D INSTALL_C_EXAMPLES=ON -D INSTALL_PYTHON_EXAMPLES=ON -D BUILD_EXAMPLES=ON -D WITH_QT=ON -D WITH_OPENGL=ON -D WITH_OPENMP=ON -D WITH_IPP=ON -D WITH_CUDA=ON -D WITH_CSTRIPES=ON -D WITH_OPENCL=ON -D ENABLE_FAST_MATH=1 -D CUDA_FAST_MATH=1 -D WITH_CUBLAS=ON -DCUDA_NVCC_FLAGS="-D_FORCE_INLINES" ..   
+#+NOTE: Look into NVCUVID - VideoReader_GPU now changed to NVENCODE and NVDECODE API
+make -j $(($(nproc) + 1))
+** Installation
+Execute the following after building the source : 
+sudo make install
+sudo /bin/bash -c 'echo "/usr/local/lib" > /etc/ld.so.conf.d/opencv.conf'
+sudo ldconfig
+sudo apt-get update
+printf '# OpenCV\nPKG_CONFIG_PATH=$PKG_CONFIG_PATH:/usr/local/lib/pkgconfig\nexport PKG_CONFIG_PATH\n' >> ~/.bashrc  
+source ~/.bashrc  
+REBOOT the system
+
+** Testing
+cd /usr/local/cuda-8.0/samples/0_Simple/clock/
+sudo make => generates the executable clock file
+./clock
+
+* Qt 
+Simple add executable permissions to the setup and run as root
+sudo chmod +x qt-opensource-linux-x64-<ver>.run
+sudo ./qt-opensource-linux-x64-<ver>.run
+* NVIDIA Video Codec SDK
+  
+Required : CUDA + OpenCV with CUDA support
+ 
+Required : CUDA + OpenCV with CUDA + ffmpeg(for conversion)
